@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel de Vendas — CX2</title>
+<style>
+:root{--bg:#0a0a0a;--card:#161616;--line:#2a2a2a;--text:#f2f2f2;--muted:#8a8a8a;--bar:#bdbdbd}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+header{display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid var(--line)}
+header h2{margin:0;font-size:18px}
+header span{color:var(--muted);font-size:13px}
+main{padding:24px;display:grid;gap:20px;max-width:1100px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;min-width:0}
+.card h3{margin:0 0 14px;font-size:15px;color:var(--muted);font-weight:500}
+form.add{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:12px;align-items:end}
+label{display:block;font-size:13px;color:var(--muted);margin:0 0 6px}
+input{width:100%;padding:11px 12px;background:#0f0f0f;border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:15px}
+input:focus{outline:none;border-color:#777}
+button{cursor:pointer;border:none;border-radius:8px;padding:11px 16px;font-size:15px;background:var(--bar);color:#000;font-weight:600}
+button:hover{background:#fff}
+.err{color:#ff6b6b;font-size:13px;margin-top:10px;min-height:18px;grid-column:1/-1}
+.kpi{font-size:28px;font-weight:700}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:500}
+td.num,th.num{text-align:right}
+.del{background:transparent;color:var(--muted);padding:4px 8px;font-size:12px;border:1px solid var(--line);font-weight:400}
+.del:hover{color:#ff6b6b;border-color:#ff6b6b;background:transparent}
+svg text{fill:var(--muted);font-size:11px;font-family:inherit}
+.empty{color:var(--muted);font-size:14px;padding:20px 0;text-align:center}
+.warn{background:#2a1a00;border:1px solid #5a3d00;color:#ffb84d;border-radius:8px;padding:10px 14px;font-size:13px}
+@media(max-width:800px){form.add{grid-template-columns:1fr}.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <h2>Painel de Vendas</h2>
+  <span>Oli · CX2</span>
+</header>
+<main>
+  <div class="card" id="storageWarn" style="display:none">
+    <div class="warn">Este navegador não guarda os dados localmente (modo privado ou arquivo aberto direto). As vendas vão sumir ao fechar a página. Use um site publicado (GitHub/Render) em vez de abrir o arquivo direto.</div>
+  </div>
+
+  <div class="card">
+    <h3>Nova venda</h3>
+    <form class="add" id="saleForm">
+      <div><label for="prod">Produto</label><input id="prod" required></div>
+      <div><label for="val">Valor (R$)</label><input id="val" type="number" step="0.01" min="0.01" required></div>
+      <div><label for="date">Data</label><input id="date" type="date" required></div>
+      <button type="submit">Adicionar</button>
+      <div class="err" id="formErr"></div>
+    </form>
+  </div>
+
+  <div class="row">
+    <div class="card"><h3>Total vendido</h3><div class="kpi" id="total">R$ 0,00</div></div>
+    <div class="card"><h3>Número de vendas</h3><div class="kpi" id="count">0</div></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h3>Vendas por produto (horizontal)</h3>
+      <div id="chartH"></div>
+    </div>
+    <div class="card">
+      <h3>Vendas por dia (vertical)</h3>
+      <div id="chartV"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Lançamentos</h3>
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+(function () {
+"use strict";
+
+const KEY = "oli-vendas-v1";
+const $ = id => document.getElementById(id);
+const fmt = v => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+// detecta se localStorage realmente funciona neste navegador/contexto
+let storageOK = true;
+try {
+  localStorage.setItem("__t", "1");
+  localStorage.removeItem("__t");
+} catch (e) {
+  storageOK = false;
+}
+if (!storageOK) $("storageWarn").style.display = "block";
+
+let sales = [];
+if (storageOK) {
+  try {
+    sales = JSON.parse(localStorage.getItem(KEY) || "[]");
+    if (!Array.isArray(sales)) sales = [];
+  } catch (e) {
+    sales = [];
+  }
+}
+
+function save() {
+  if (!storageOK) return;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(sales));
+  } catch (e) {
+    $("formErr").textContent = "Não foi possível salvar (armazenamento cheio ou bloqueado).";
+  }
+}
+
+function todayStr() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+$("date").value = todayStr();
+
+$("saleForm").addEventListener("submit", function (e) {
+  e.preventDefault();
+  const prod = $("prod").value.trim();
+  const val = parseFloat($("val").value);
+  const date = $("date").value;
+  $("formErr").textContent = "";
+
+  if (!prod) {
+    $("formErr").textContent = "Informe o produto.";
+    return;
+  }
+  if (!isFinite(val) || val <= 0) {
+    $("formErr").textContent = "Informe um valor válido maior que zero.";
+    return;
+  }
+  if (!date) {
+    $("formErr").textContent = "Informe a data.";
+    return;
+  }
+
+  sales.push({
+    id: Date.now() + Math.random(),
+    prod: prod,
+    val: val,
+    date: date
+  });
+  save();
+  this.reset();
+  $("date").value = todayStr();
+  render();
+  $("prod").focus();
+});
+
+function removeSale(id) {
+  sales = sales.filter(function (s) { return s.id !== id; });
+  save();
+  render();
+}
+window.removeSale = removeSale;
+
+function group(keyFn) {
+  const m = {};
+  for (const s of sales) {
+    const k = keyFn(s);
+    m[k] = (m[k] || 0) + s.val;
+  }
+  return m;
+}
+
+function render() {
+  const sorted = sales.slice().sort(function (a, b) { return b.date.localeCompare(a.date); });
+  const total = sales.reduce(function (s, x) { return s + x.val; }, 0);
+  $("total").textContent = fmt(total);
+  $("count").textContent = sales.length;
+  renderList(sorted);
+  renderH();
+  renderV();
+}
+
+function renderList(sorted) {
+  if (!sorted.length) {
+    $("list").innerHTML = '<div class="empty">Nenhuma venda ainda.</div>';
+    return;
+  }
+  let html = '<table><tr><th>Data</th><th>Produto</th><th class="num">Valor</th><th></th></tr>';
+  for (const s of sorted) {
+    html += `<tr>
+      <td>${s.date.split("-").reverse().join("/")}</td>
+      <td>${esc(s.prod)}</td>
+      <td class="num">${fmt(s.val)}</td>
+      <td class="num"><button class="del" data-id="${s.id}">Excluir</button></td>
+    </tr>`;
+  }
+  $("list").innerHTML = html + "</table>";
+  $("list").querySelectorAll(".del").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      removeSale(parseFloat(btn.getAttribute("data-id")));
+    });
+  });
+}
+
+function renderH() {
+  const data = Object.entries(group(function (s) { return s.prod; })).sort(function (a, b) { return b[1] - a[1]; });
+  if (!data.length) {
+    $("chartH").innerHTML = '<div class="empty">Sem dados.</div>';
+    return;
+  }
+  const max = Math.max(...data.map(function (d) { return d[1]; }));
+  const rowH = 34, labelW = 110, W = 500, barMax = W - labelW - 95;
+  const H = data.length * rowH + 10;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%">`;
+  data.forEach(function ([name, v], i) {
+    const y = i * rowH + 5;
+    const w = Math.max(2, (v / max) * barMax);
+    svg += `
+      <text x="0" y="${y + 18}">${esc(trunc(name, 15))}</text>
+      <rect x="${labelW}" y="${y + 4}" width="${w}" height="20" rx="4" fill="#bdbdbd"/>
+      <text x="${labelW + w + 6}" y="${y + 18}" style="fill:#f2f2f2">${fmt(v)}</text>`;
+  });
+  $("chartH").innerHTML = svg + "</svg>";
+}
+
+function renderV() {
+  const data = Object.entries(group(function (s) { return s.date; })).sort(function (a, b) { return a[0].localeCompare(b[0]); });
+  if (!data.length) {
+    $("chartV").innerHTML = '<div class="empty">Sem dados.</div>';
+    return;
+  }
+  const W = 500, H = 260, padT = 24, padB = 36;
+  const chartH = H - padT - padB;
+  const max = Math.max(...data.map(function (d) { return d[1]; }));
+  const slot = W / data.length;
+  const bw = Math.min(44, slot * 0.6);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%">`;
+  data.forEach(function ([date, v], i) {
+    const h = Math.max(2, (v / max) * chartH);
+    const x = i * slot + (slot - bw) / 2;
+    const y = padT + chartH - h;
+    const cx = x + bw / 2;
+    svg += `
+      <rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="4" fill="#bdbdbd"/>
+      <text x="${cx}" y="${y - 6}" text-anchor="middle" style="fill:#f2f2f2">${v.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}</text>
+      <text x="${cx}" y="${H - padB + 18}" text-anchor="middle">${date.split("-").reverse().slice(0, 2).join("/")}</text>`;
+  });
+  $("chartV").innerHTML = svg + "</svg>";
+}
+
+render();
+})();
+</script>
+</body>
+</html>
